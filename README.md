@@ -11,7 +11,7 @@
 - 🛠️ 支持 RSA 和 ECC 证书
 - 🧪 支持 Staging 环境测试
 - 🎨 UI 配置界面（Config Flow）
-- 🔔 事件通知
+- 📊 证书状态传感器（到期时间、剩余天数、颁发者）
 - 🖼️ 支持自定义品牌图标（2026.3+）
 
 ## 安装方法
@@ -63,58 +63,39 @@
 
 更多 DNS 提供商请参考 [acme.sh DNS API 文档](https://github.com/acmesh-official/acme.sh/wiki/dnsapi)
 
-## 服务
+## 证书状态传感器
 
-安装集成后，您可以使用以下服务：
+集成会在 `/ssl` 目录中查找域名对应的证书文件，并创建一个传感器：
 
-### acme_sh.issue_certificate
+- 状态：`valid` / `renewal_required` / `expired` / `not_found` / `error`
+- 属性：`domain`、`domains`、`expiry_date`、`days_remaining`、`issuer`、`auto_renew`、`certificate_path`
 
-申请或续期 SSL 证书。
+按以下顺序查找证书（`/ssl` 与 `<配置目录>/ssl` 都会尝试）：
 
-```yaml
-service: acme_sh.issue_certificate
-data:
-  email: your-email@example.com
-  domains:
-    - "*.example.com"
-    - "example.com"
-  dns_provider: dns_cf
-  dns_env:
-    CF_Token: "your-token"
-  keylength: "ec-256"
-  staging: false
-  acme_server: "letsencrypt"
-  force: false
-```
+1. `/ssl/acme.sh/<域名>/fullchain.pem`（本 Add-on 的安装路径）
+2. `/ssl/<域名>.pem`（本 Add-on 复制出的全链证书）
+3. `/ssl/<域名>-fullchain.pem`
+4. `/ssl/<域名>/fullchain.pem`
 
-### acme_sh.renew_certificate
+证书的申请与续期由 Add-on（或系统内的 acme.sh）完成，集成只负责读取并展示状态，
+每 6 小时刷新一次。需要立刻触发一次申请/续期时，重启 Add-on 即可。
 
-检查并续期证书。
-
-```yaml
-service: acme_sh.renew_certificate
-```
-
-## 事件
-
-集成会触发以下事件：
-
-- `acme_sh_certificate_issued` - 证书申请成功
-- `acme_sh_certificate_failed` - 证书申请失败
-- `acme_sh_renewal_completed` - 证书续期完成
+找不到证书时传感器显示 `not_found`，不会导致集成配置失败。
 
 ### 自动化示例
 
 ```yaml
 automation:
-  - alias: "SSL Certificate Renewed"
+  - alias: "SSL 证书即将到期"
     trigger:
-      - platform: event
-        event_type: acme_sh_certificate_issued
+      - platform: numeric_state
+        entity_id: sensor.acme_sh_ssl_certificate
+        attribute: days_remaining
+        below: 15
     action:
       - service: notify.notify
         data:
-          message: "SSL certificate has been renewed successfully!"
+          message: "SSL 证书将在 15 天内到期，请检查续期情况"
 ```
 
 ## Home Assistant 配置
@@ -123,27 +104,37 @@ automation:
 
 ```yaml
 http:
-  ssl_certificate: /ssl/example.com-fullchain.pem
+  ssl_certificate: /ssl/example.com.pem
   ssl_key: /ssl/example.com-key.pem
 ```
 
 ## 证书位置
 
-申请成功后，证书将保存在：
+Add-on 申请成功后，证书保存在：
 
-- `/ssl/<domain>.pem` - 证书
+- `/ssl/acme.sh/<domain>/cert.pem` - 证书
+- `/ssl/acme.sh/<domain>/key.pem` - 私钥
+- `/ssl/acme.sh/<domain>/fullchain.pem` - 完整证书链
+- `/ssl/acme.sh/<domain>/ca.pem` - 中间证书
+
+同时复制到标准位置供 Home Assistant 使用：
+
+- `/ssl/<domain>.pem` - 完整证书链
 - `/ssl/<domain>-key.pem` - 私钥
-- `/ssl/<domain>-fullchain.pem` - 完整证书链
 
 ## 前置要求
 
-此集成需要 acme.sh 已安装在您的 Home Assistant 系统中。您可以通过以下方式安装：
+集成本身只读取 `/ssl` 目录中的证书文件，不需要在 Home Assistant 配置目录里安装 acme.sh。
+证书的申请与续期需要由以下任一方式完成：
 
 ### 方式一：使用 Add-on（推荐）
 
-安装本仓库提供的 ACME.sh Add-on。
+安装本仓库提供的 ACME.sh Add-on，它会在自己的容器内运行 acme.sh，
+并把证书写入 `/ssl`。
 
 ### 方式二：手动安装
+
+在 Home Assistant 之外的主机上安装 acme.sh，并确保证书最终落到 `/ssl`：
 
 ```bash
 curl https://get.acme.sh | sh -s email=my@example.com
@@ -162,9 +153,10 @@ curl https://get.acme.sh | sh -s email=my@example.com
    - 确认域名 DNS 解析正常
    - 检查邮箱格式是否正确
 
-2. **找不到 acme.sh**
-   - 确保已安装 acme.sh
-   - 检查 acme.sh 是否在 PATH 中
+2. **传感器显示 `not_found`**
+   - 确认 Add-on 已成功签发证书（查看 Add-on 日志）
+   - 确认 `/ssl` 下存在与集成中填写的主域名同名的证书文件
+   - 集成中填写的域名必须与 Add-on `domains` 里的第一个域名一致
 
 3. **权限问题**
    - 确保 Home Assistant 有权限访问 SSL 目录
