@@ -39,49 +39,5 @@
         }
       }
     }
-  },
-  "services": {
-    "issue_certificate": {
-      "name": "Issue Certificate",
-      "description": "Issue or renew an SSL certificate",
-      "fields": {
-        "email": {
-          "name": "Email",
-          "description": "Email address for ACME account"
-        },
-        "domains": {
-          "name": "Domains",
-          "description": "List of domains for the certificate"
-        },
-        "dns_provider": {
-          "name": "DNS Provider",
-          "description": "DNS API provider code"
-        },
-        "dns_env": {
-          "name": "DNS Environment",
-          "description": "Environment variables for DNS provider"
-        },
-        "keylength": {
-          "name": "Key Length",
-          "description": "Certificate key length"
-        },
-        "staging": {
-          "name": "Staging",
-          "description": "Use staging environment"
-        },
-        "acme_server": {
-          "name": "ACME Server",
-          "description": "ACME server to use"
-        },
-        "force": {
-          "name": "Force",
-          "description": "Force reissue even if not expired"
-        }
-      }
-    },
-    "renew_certificate": {
-      "name": "Renew Certificate",
-      "description": "Check and renew certificates if needed"
-    }
   }
 }

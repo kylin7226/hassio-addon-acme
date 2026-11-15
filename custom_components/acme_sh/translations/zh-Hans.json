@@ -39,49 +39,5 @@
         }
       }
     }
-  },
-  "services": {
-    "issue_certificate": {
-      "name": "申请证书",
-      "description": "申请或续期 SSL 证书",
-      "fields": {
-        "email": {
-          "name": "邮箱",
-          "description": "ACME 账户邮箱地址"
-        },
-        "domains": {
-          "name": "域名",
-          "description": "证书域名列表"
-        },
-        "dns_provider": {
-          "name": "DNS 提供商",
-          "description": "DNS API 提供商代码"
-        },
-        "dns_env": {
-          "name": "DNS 环境变量",
-          "description": "DNS 提供商的环境变量"
-        },
-        "keylength": {
-          "name": "密钥长度",
-          "description": "证书密钥长度"
-        },
-        "staging": {
-          "name": "测试模式",
-          "description": "使用测试环境"
-        },
-        "acme_server": {
-          "name": "ACME 服务器",
-          "description": "使用的 ACME 服务器"
-        },
-        "force": {
-          "name": "强制",
-          "description": "即使未到期也强制重新申请"
-        }
-      }
-    },
-    "renew_certificate": {
-      "name": "续期证书",
-      "description": "检查并在需要时续期证书"
-    }
   }
 }

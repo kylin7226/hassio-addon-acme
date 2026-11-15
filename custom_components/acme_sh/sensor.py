@@ -74,6 +74,7 @@ class CertificateSensor(CoordinatorEntity, SensorEntity):
             "days_remaining": data.get("days_remaining"),
             "issuer": data.get("issuer"),
             "auto_renew": data.get("auto_renew"),
+            "certificate_path": data.get("certificate_path"),
         }
         
         return {k: v for k, v in attrs.items() if v is not None}
@@ -85,9 +86,11 @@ class CertificateSensor(CoordinatorEntity, SensorEntity):
         
         if status == "valid":
             return "mdi:check-circle"
-        elif status == "expired":
+        elif status in ("expired", "error"):
             return "mdi:alert-circle"
         elif status == "renewal_required":
             return "mdi:alert"
+        elif status == "not_found":
+            return "mdi:file-question"
         else:
             return "mdi:help-circle"

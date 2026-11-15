@@ -1,195 +1,78 @@
 """ACME.sh SSL Certificate Manager integration for Home Assistant."""
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
-import subprocess
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from cryptography import x509
+
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_EMAIL, CONF_DOMAIN
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.typing import ConfigType
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity,
-    DataUpdateCoordinator,
-    UpdateFailed,
-)
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
-    DOMAIN,
-    CONF_DNS_PROVIDER,
-    CONF_DNS_ENV,
-    CONF_KEYLENGTH,
-    CONF_DAYS,
-    CONF_STAGING,
-    CONF_ACME_SERVER,
     CONF_AUTO_RENEW,
-    CONF_RENEW_INTERVAL,
-    DEFAULT_KEYLENGTH,
+    CONF_DAYS,
     DEFAULT_DAYS,
-    DEFAULT_ACME_SERVER,
+    DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[str] = ["sensor"]
 
+# The add-on installs certificates under /ssl, which the supervisor also mounts
+# into the Home Assistant container. A Core/Container install may instead keep
+# them below the configuration directory.
+_CERT_FILE_NAMES = (
+    "acme.sh/{domain}/fullchain.pem",
+    "{domain}.pem",
+    "{domain}-fullchain.pem",
+    "{domain}/fullchain.pem",
+)
 
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the ACME.sh component."""
-    hass.data.setdefault(DOMAIN, {})
-    
-    async def async_issue_certificate(call):
-        """Issue or renew SSL certificate."""
-        email = call.data.get("email")
-        domains = call.data.get("domains", [])
-        dns_provider = call.data.get("dns_provider", "dns_cf")
-        dns_env = call.data.get("dns_env", {})
-        keylength = call.data.get("keylength", DEFAULT_KEYLENGTH)
-        staging = call.data.get("staging", False)
-        acme_server = call.data.get("acme_server", DEFAULT_ACME_SERVER)
-        force = call.data.get("force", False)
-        
-        if not email or not domains:
-            _LOGGER.error("Email and domains are required")
-            return
-        
-        acme_sh_path = Path(hass.config.path("acme.sh"))
-        
-        cmd = [
-            str(acme_sh_path / "acme.sh"),
-            "--issue",
-            "--dns", dns_provider,
-        ]
-        
-        for domain in domains:
-            cmd.extend(["-d", domain])
-        
-        cmd.extend(["--keylength", keylength])
-        cmd.extend(["--config-home", str(acme_sh_path)])
-        
-        if staging:
-            cmd.append("--staging")
-        
-        if force:
-            cmd.append("--force")
-        
-        env = os.environ.copy()
-        env.update(dns_env)
-        
-        _LOGGER.info("Issuing certificate for domains: %s", domains)
-        
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            
-            if proc.returncode == 0:
-                _LOGGER.info("Certificate issued successfully")
-                
-                main_domain = domains[0]
-                ssl_dir = Path(hass.config.path("ssl"))
-                ssl_dir.mkdir(exist_ok=True)
-                
-                install_cmd = [
-                    str(acme_sh_path / "acme.sh"),
-                    "--install-cert",
-                    "-d", main_domain,
-                    "--config-home", str(acme_sh_path),
-                    "--cert-file", str(ssl_dir / f"{main_domain}.pem"),
-                    "--key-file", str(ssl_dir / f"{main_domain}-key.pem"),
-                    "--fullchain-file", str(ssl_dir / f"{main_domain}-fullchain.pem"),
-                ]
-                
-                install_proc = await asyncio.create_subprocess_exec(
-                    *install_cmd,
-                    env=env,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await install_proc.communicate()
-                
-                hass.bus.async_fire(f"{DOMAIN}_certificate_issued", {
-                    "domains": domains,
-                    "main_domain": main_domain,
-                })
-                
-                for entry_id in hass.data[DOMAIN]:
-                    if isinstance(hass.data[DOMAIN][entry_id], dict):
-                        coordinator = hass.data[DOMAIN][entry_id].get("coordinator")
-                        if coordinator:
-                            await coordinator.async_request_refresh()
-            else:
-                _LOGGER.error("Failed to issue certificate: %s", stderr.decode())
-                hass.bus.async_fire(f"{DOMAIN}_certificate_failed", {
-                    "domains": domains,
-                    "error": stderr.decode(),
-                })
-        except Exception as e:
-            _LOGGER.error("Error issuing certificate: %s", e)
-    
-    async def async_renew_certificate(call):
-        """Renew SSL certificates."""
-        acme_sh_path = Path(hass.config.path("acme.sh"))
-        
-        cmd = [
-            str(acme_sh_path / "acme.sh"),
-            "--cron",
-            "--config-home", str(acme_sh_path),
-        ]
-        
-        _LOGGER.info("Running certificate renewal check")
-        
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            
-            if proc.returncode == 0:
-                _LOGGER.info("Certificate renewal check completed")
-                hass.bus.async_fire(f"{DOMAIN}_renewal_completed")
-                
-                for entry_id in hass.data[DOMAIN]:
-                    if isinstance(hass.data[DOMAIN][entry_id], dict):
-                        coordinator = hass.data[DOMAIN][entry_id].get("coordinator")
-                        if coordinator:
-                            await coordinator.async_request_refresh()
-            else:
-                _LOGGER.error("Certificate renewal failed: %s", stderr.decode())
-        except Exception as e:
-            _LOGGER.error("Error renewing certificate: %s", e)
-    
-    hass.services.async_register(DOMAIN, "issue_certificate", async_issue_certificate)
-    hass.services.async_register(DOMAIN, "renew_certificate", async_renew_certificate)
-    
-    return True
+
+def _ssl_dirs(hass: HomeAssistant) -> list[Path]:
+    """Return the candidate SSL directories, most specific first."""
+    dirs = [Path("/ssl"), Path(hass.config.path("ssl"))]
+    return [d for i, d in enumerate(dirs) if d not in dirs[:i]]
+
+
+def _find_cert_file(hass: HomeAssistant, domain: str) -> Path | None:
+    """Locate the fullchain certificate file for a domain."""
+    for base in _ssl_dirs(hass):
+        for name in _CERT_FILE_NAMES:
+            candidate = base / name.format(domain=domain)
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _parse_cert(path: Path) -> dict[str, Any]:
+    """Read expiry and issuer information from a PEM certificate."""
+    cert = x509.load_pem_x509_certificate(path.read_bytes())
+    expiry = cert.not_valid_after_utc
+    return {
+        "expiry_date": expiry.strftime("%Y-%m-%d %H:%M:%S"),
+        "days_remaining": (expiry - datetime.now(UTC)).days,
+        "issuer": cert.issuer.rfc4514_string(),
+    }
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up ACME.sh from a config entry."""
-    
-    async def async_update_data():
-        """Fetch data from acme.sh."""
-        acme_sh_path = Path(hass.config.path("acme.sh"))
-        domains = entry.data.get("domains", [])
-        
-        if not domains:
-            return {}
-        
-        main_domain = domains[0] if isinstance(domains, list) else domains
-        cert_data = {
+    hass.data.setdefault(DOMAIN, {})
+
+    async def async_update_data() -> dict[str, Any]:
+        """Read certificate information from the SSL directory."""
+        domains = entry.data.get("domains") or []
+        if isinstance(domains, str):
+            domains = [d.strip() for d in domains.split(",") if d.strip()]
+
+        main_domain = domains[0] if domains else ""
+        cert_data: dict[str, Any] = {
             "domain": main_domain,
             "domains": domains,
             "status": "unknown",
@@ -198,91 +81,58 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "issuer": None,
             "auto_renew": entry.options.get(CONF_AUTO_RENEW, True),
         }
-        
+
+        if not main_domain:
+            cert_data["status"] = "not_configured"
+            return cert_data
+
+        cert_file = await hass.async_add_executor_job(_find_cert_file, hass, main_domain)
+        if cert_file is None:
+            _LOGGER.debug("No certificate found for %s", main_domain)
+            cert_data["status"] = "not_found"
+            return cert_data
+
+        cert_data["certificate_path"] = str(cert_file)
+
         try:
-            cmd = [
-                str(acme_sh_path / "acme.sh"),
-                "--list",
-                "--config-home", str(acme_sh_path),
-            ]
-            
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            
-            if main_domain in stdout.decode():
-                cert_data["status"] = "valid"
-            
-            ssl_dir = Path(hass.config.path("ssl"))
-            cert_file = ssl_dir / f"{main_domain}-fullchain.pem"
-            
-            if cert_file.exists():
-                openssl_cmd = [
-                    "openssl",
-                    "x509",
-                    "-in", str(cert_file),
-                    "-noout",
-                    "-dates",
-                    "-issuer",
-                ]
-                
-                proc = await asyncio.create_subprocess_exec(
-                    *openssl_cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await proc.communicate()
-                
-                output = stdout.decode()
-                
-                for line in output.split("\n"):
-                    if line.startswith("notAfter="):
-                        date_str = line.replace("notAfter=", "").strip()
-                        try:
-                            expiry_date = datetime.strptime(date_str, "%b %d %H:%M:%S %Y %Z")
-                            cert_data["expiry_date"] = expiry_date.strftime("%Y-%m-%d %H:%M:%S")
-                            cert_data["days_remaining"] = (expiry_date - datetime.now()).days
-                        except ValueError:
-                            pass
-                    elif line.startswith("issuer="):
-                        cert_data["issuer"] = line.replace("issuer=", "").strip()
-                
-                if cert_data["days_remaining"] is not None:
-                    if cert_data["days_remaining"] < 0:
-                        cert_data["status"] = "expired"
-                    elif cert_data["days_remaining"] < entry.data.get(CONF_DAYS, DEFAULT_DAYS):
-                        cert_data["status"] = "renewal_required"
-                    else:
-                        cert_data["status"] = "valid"
-        
-        except Exception as e:
-            _LOGGER.error("Error updating certificate data: %s", e)
-            raise UpdateFailed(f"Error updating certificate data: {e}")
-        
+            info = await hass.async_add_executor_job(_parse_cert, cert_file)
+        except Exception:
+            _LOGGER.exception("Error reading certificate %s", cert_file)
+            cert_data["status"] = "error"
+            return cert_data
+
+        cert_data.update(info)
+
+        days_remaining = cert_data["days_remaining"]
+        threshold = entry.data.get(CONF_DAYS, DEFAULT_DAYS)
+        if days_remaining < 0:
+            cert_data["status"] = "expired"
+        elif days_remaining < threshold:
+            cert_data["status"] = "renewal_required"
+        else:
+            cert_data["status"] = "valid"
+
         return cert_data
-    
+
     coordinator = DataUpdateCoordinator(
         hass,
-        _LOGGER,
+        logger=_LOGGER,
         name=f"{DOMAIN}_{entry.entry_id}",
         update_method=async_update_data,
         update_interval=timedelta(hours=6),
     )
-    
+
     await coordinator.async_config_entry_first_refresh()
-    
+
     hass.data[DOMAIN][entry.entry_id] = {
         "coordinator": coordinator,
         "config": entry.data,
     }
-    
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    
+
     entry.async_on_unload(entry.add_update_listener(async_update_options))
-    
+
     return True
 
 
@@ -290,7 +140,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hass.data[DOMAIN].pop(entry.entry_id)
-    
+
     return unload_ok
 
 
